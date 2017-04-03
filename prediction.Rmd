@@ -1,0 +1,162 @@
+---
+title: "Prediction Assignment Writeup"
+author: "Lesky Anatias"
+date: "April 2, 2017"
+output:
+  html_document:
+    fig_height: 10
+    fig_width: 10
+  pdf_document: default
+---
+
+```{r setup, cache = TRUE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, fig.width=10, fig.height=10)
+options(width=120)
+
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(corrplot)
+```
+
+## Summary
+The goal of this project is to train a predictive model to predict the manner in which 6 participants did the exercise using data taken from accelerometers on the belt, forearm, arm, and dumbell based on a dataset provided by HAR [link](http://groupware.les.inf.puc-rio.br/har). 
+
+The participants were asked to perform barbell lifts correctly and incorrectly in 5 different ways. The five ways are exactly according to the specification (Class A), throwing the elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E). Only Class A corresponds to correct performance.  
+
+## Pre-processing and Exploratory Analyses  
+
+```{r, cache = TRUE}
+training.url <-"https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testing.url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+training.file <- "./data/pml-training.csv"
+testing.file  <- "./data/pml-testing.csv"
+if (!file.exists("./data")) {
+  dir.create("./data")
+}
+if (!file.exists(training.file)) {
+  download.file(training.url, destFile=training.file, method="curl")
+}
+if (!file.exists(testing.file)) {
+  download.file(testing.url, destFile=testing.file, method="curl")
+}
+
+training.raw <- read.csv("./data/pml-training.csv")
+testing.raw <- read.csv("./data/pml-testing.csv")
+
+dim(training.raw)
+dim(testing.raw)
+
+# Excluded from report:
+# str(training.raw)
+# summary(training.raw)
+
+```
+
+From the exploratory analyses, we found out the training dataset contains 19622 observations and 160 variables, and the testing dataset contains 20 observations and 160 variables. The "classe" variable in the training set is the outcome to predict. 
+
+## Data Cleaning
+
+Before working with the model prediction, we need to clean the data by eliminating observations with NA / empty values / other unrelated data.
+
+```{r, cache = TRUE}
+sum(complete.cases(training.raw))
+#Remove columns that contain NA / empty values
+training.raw <- training.raw[, colSums(is.na(training.raw)) == 0] 
+testing.raw <- testing.raw[, colSums(is.na(testing.raw)) == 0] 
+#Remove columns that do not contribute to the accelerometer measurements.
+classe <- training.raw$classe
+training.remove <- grepl("^X|timestamp|window", names(training.raw))
+training.raw <- training.raw[, !training.remove]
+training.cleaned <- training.raw[, sapply(training.raw, is.numeric)]
+training.cleaned$classe <- classe
+testing.remove <- grepl("^X|timestamp|window", names(testing.raw))
+testing.raw <- testing.raw[, !testing.remove]
+testing.cleaned <- testing.raw[, sapply(testing.raw, is.numeric)]
+```
+Now, the cleaned training data set contains 19622 observations and 53 variables, while the testing data set contains 20 observations and 53 variables. The "classe" variable is still in the cleaned training set.
+
+## Data Partition
+
+Since the test dataset is the ultimate validation dataset, we partition cleaned training dataset into a test dataset (75%) and a train dataset (25%). The train dataset will be used to conduct cross validation.  
+
+```{r, cache = TRUE}
+set.seed(210679) 
+pTrain <- createDataPartition(training.cleaned$classe, p=0.75, list=FALSE)
+training.data <- training.cleaned[pTrain, ]
+testing.data <- training.cleaned[-pTrain, ]
+```
+
+## Data Modeling
+
+Then, we identify variables with high correlations amongst each other in our dataset with correlation matrix below:  
+
+```{r, cache = TRUE}
+corr.plot <- cor(training.data[, -length(names(training.data))])
+corrplot(corr.plot, method="color")
+```
+
+We see that there are some features that are quite correlated with each other. 
+
+Since *Classification Tree* method does not perform well (see appendix), We fit a predictive model for activity recognition using *Random Forest* algorithm because it automatically selects important variables and is robust to correlated covariates & outliers. We use *5-fold cross validation* and *250 trees*.
+
+```{r, cache = TRUE}
+rf.control <- trainControl(method="cv", 5)
+rf.model <- train(classe ~ ., data=training.data, method="rf", trControl=rf.control, ntree=250)
+rf.model
+```
+
+Then, we estimate the performance of the model on the validation data set.  
+
+```{r, cache = TRUE}
+rf.prediction <- predict(rf.model, testing.data)
+confusionMatrix(testing.data$classe, rf.prediction)
+```
+
+```{r, cache = TRUE}
+accuracy <- postResample(rf.prediction, testing.data$classe)
+accuracy
+
+error <- 1 - as.numeric(confusionMatrix(testing.data$classe, rf.prediction)$overall[1])
+error
+```
+
+So, the estimated accuracy of the model is 99.2% and the estimated out-of-sample error is 0.79%. This may be due to the fact that many predictors are highly correlated. Random forests chooses a subset of predictors at each split and decorrelate the trees. This leads to high accuracy. 
+
+## Predicting the Test Dataset
+
+Now, we use use the *random forests* to predict the outcome variable `classe` for the testing set. We remove the `problem_id` column first.  
+
+```{r, cache = TRUE}
+test.result <- predict(rf.model, testing.cleaned[, -length(names(testing.cleaned))])
+test.result
+```  
+
+## Appendix
+
+**Classification Trees**
+
+```{r, cache = TRUE}
+tree.model <- rpart(classe ~ ., data=training.data, method="class")
+prp(tree.model)
+```
+
+```{r, cache = TRUE}
+ct.control <- trainControl(method="cv", 5)
+ct.model <- train(classe ~ ., data=training.data, method="rpart", trControl=ct.control)
+ct.model
+
+ct.prediction <- predict(ct.model, testing.data)
+confusionMatrix(testing.data$classe, ct.prediction)
+```
+
+```{r, cache = TRUE}
+ct.accuracy <- postResample(ct.prediction, testing.data$classe)
+ct.accuracy
+
+ct.error <- 1 - as.numeric(confusionMatrix(testing.data$classe, ct.prediction)$overall[1])
+ct.error
+```
+
+From the confusion matrix, the estimated accuracy of the model is 50% and the estimated out-of-sample error is 50%. Using classification tree does not predict the outcome `classe` very well.
