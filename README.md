@@ -1,5 +1,4 @@
 # Prediction Assignment Writeup
-==================================================================
 
 ## Background
 
